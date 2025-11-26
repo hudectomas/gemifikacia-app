@@ -14,7 +14,7 @@ class SyncService {
   bool _isSyncing = false;
   DateTime? _lastSyncTime;
   int _pendingStampsCount = 0;
-  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  StreamSubscription<dynamic>? _connectivitySubscription;
   
   bool get isSyncing => _isSyncing;
   DateTime? get lastSyncTime => _lastSyncTime;
@@ -22,14 +22,25 @@ class SyncService {
 
   SyncService(this._apiService, this._databaseService, this._authService);
 
+  /// Helper to check if a connectivity result indicates connection
+  bool _isConnectedResult(ConnectivityResult r) {
+    return r == ConnectivityResult.mobile ||
+           r == ConnectivityResult.wifi ||
+           r == ConnectivityResult.ethernet;
+  }
+
   /// Start listening for connectivity changes and auto-sync
   void startAutoSync() {
-    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((results) async {
-      final isConnected = results.any((r) => 
-        r == ConnectivityResult.mobile ||
-        r == ConnectivityResult.wifi ||
-        r == ConnectivityResult.ethernet
-      );
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) async {
+      // Handle both List<ConnectivityResult> (new API) and ConnectivityResult (old API)
+      final bool isConnected;
+      if (result is List<ConnectivityResult>) {
+        isConnected = result.any(_isConnectedResult);
+      } else if (result is ConnectivityResult) {
+        isConnected = _isConnectedResult(result);
+      } else {
+        isConnected = false;
+      }
       
       if (isConnected && _authService.isAuthenticated) {
         developer.log('Internet connected - starting auto-sync...');
@@ -45,12 +56,14 @@ class SyncService {
   }
 
   Future<bool> isOnline() async {
-    final connectivityResult = await Connectivity().checkConnectivity();
-    return connectivityResult.any((r) =>
-      r == ConnectivityResult.mobile ||
-      r == ConnectivityResult.wifi ||
-      r == ConnectivityResult.ethernet
-    );
+    final result = await Connectivity().checkConnectivity();
+    // Handle both List<ConnectivityResult> (new API) and ConnectivityResult (old API)
+    if (result is List<ConnectivityResult>) {
+      return result.any(_isConnectedResult);
+    } else if (result is ConnectivityResult) {
+      return _isConnectedResult(result);
+    }
+    return false;
   }
 
   /// Update pending stamps count

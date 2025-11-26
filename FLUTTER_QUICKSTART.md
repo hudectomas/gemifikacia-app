@@ -339,3 +339,4 @@ Pre viac info pozrite `README.md`
 
 
 
+

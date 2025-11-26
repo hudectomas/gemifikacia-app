@@ -105,3 +105,4 @@ Card Background: #FFFFFF      // Biela
 
 
 
+

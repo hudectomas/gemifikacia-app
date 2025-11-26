@@ -75,6 +75,19 @@ class DatabaseService implements IDatabaseService {
         UNIQUE(user_id, task_id)
       )
     ''');
+
+    // Participants table - children who collect stamps (for offline mode)
+    await db.execute('''
+      CREATE TABLE participants (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        email TEXT NOT NULL,
+        avatar TEXT,
+        total_points INTEGER DEFAULT 0,
+        total_stamps INTEGER DEFAULT 0,
+        last_updated TEXT
+      )
+    ''');
   }
 
   // User operations
@@ -244,6 +257,134 @@ class DatabaseService implements IDatabaseService {
     await db.delete('users');
     await db.delete('tasks');
     await db.delete('user_stamps');
+    await db.delete('participants');
+  }
+
+  // Participants operations (children for offline mode)
+  @override
+  Future<List<User>> getParticipants() async {
+    final db = await database;
+    final maps = await db.query('participants', orderBy: 'name');
+    
+    return maps.map((map) => User(
+      id: map['id'] as int,
+      name: map['name'] as String,
+      email: map['email'] as String,
+      avatar: map['avatar'] as String?,
+      role: 'child',
+    )).toList();
+  }
+
+  @override
+  Future<void> saveParticipants(List<User> participants) async {
+    final db = await database;
+    await db.delete('participants');
+    
+    for (var participant in participants) {
+      await db.insert('participants', {
+        'id': participant.id,
+        'name': participant.name,
+        'email': participant.email,
+        'avatar': participant.avatar,
+        'total_points': 0,
+        'total_stamps': 0,
+        'last_updated': DateTime.now().toIso8601String(),
+      });
+    }
+  }
+
+  @override
+  Future<User?> getParticipantById(int userId) async {
+    final db = await database;
+    final maps = await db.query(
+      'participants',
+      where: 'id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    
+    if (maps.isNotEmpty) {
+      return User(
+        id: maps.first['id'] as int,
+        name: maps.first['name'] as String,
+        email: maps.first['email'] as String,
+        avatar: maps.first['avatar'] as String?,
+        role: 'child',
+      );
+    }
+    
+    return null;
+  }
+
+  @override
+  Future<List<User>> searchParticipants(String query) async {
+    final db = await database;
+    final maps = await db.query(
+      'participants',
+      where: 'name LIKE ? OR email LIKE ?',
+      whereArgs: ['%$query%', '%$query%'],
+      orderBy: 'name',
+    );
+    
+    return maps.map((map) => User(
+      id: map['id'] as int,
+      name: map['name'] as String,
+      email: map['email'] as String,
+      avatar: map['avatar'] as String?,
+      role: 'child',
+    )).toList();
+  }
+
+  // Pending stamps (offline stamps waiting to be synced)
+  @override
+  Future<List<UserStamp>> getPendingStamps() async {
+    final db = await database;
+    final maps = await db.query(
+      'user_stamps',
+      where: 'synced = 0',
+      orderBy: 'stamped_at ASC',
+    );
+    
+    return maps.map((map) {
+      TaskModel? task;
+      if (map['task_json'] != null) {
+        task = TaskModel.fromJson(jsonDecode(map['task_json'] as String) as Map<String, dynamic>);
+      }
+      
+      return UserStamp(
+        id: map['id'] as int,
+        userId: map['user_id'] as int,
+        taskId: map['task_id'] as int,
+        stampedBy: map['stamped_by'] as int,
+        stampedAt: DateTime.parse(map['stamped_at'] as String),
+        qrCodeUsed: map['qr_code_used'] as String?,
+        synced: false,
+        notes: map['notes'] as String?,
+        task: task,
+      );
+    }).toList();
+  }
+
+  @override
+  Future<void> markStampAsSynced(int stampId) async {
+    final db = await database;
+    await db.update(
+      'user_stamps',
+      {'synced': 1},
+      where: 'id = ?',
+      whereArgs: [stampId],
+    );
+  }
+
+  @override
+  Future<void> markStampAsSyncedByUserAndTask(int userId, int taskId) async {
+    final db = await database;
+    await db.update(
+      'user_stamps',
+      {'synced': 1},
+      where: 'user_id = ? AND task_id = ?',
+      whereArgs: [userId, taskId],
+    );
   }
 
   @override

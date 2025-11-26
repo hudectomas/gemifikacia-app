@@ -108,6 +108,72 @@ class DatabaseService implements IDatabaseService {
     return stamps.fold<int>(0, (sum, stamp) => sum + (stamp.task?.points ?? 0));
   }
 
+  // Participants operations (children for offline mode)
+  @override
+  Future<List<User>> getParticipants() async {
+    final prefs = await SharedPreferences.getInstance();
+    final participantsJson = prefs.getString('participants');
+    
+    if (participantsJson != null) {
+      final participantsList = jsonDecode(participantsJson) as List;
+      return participantsList.map((json) => User.fromJson(json as Map<String, dynamic>)).toList();
+    }
+    
+    return [];
+  }
+
+  @override
+  Future<void> saveParticipants(List<User> participants) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('participants', jsonEncode(participants.map((p) => p.toJson()).toList()));
+  }
+
+  @override
+  Future<User?> getParticipantById(int userId) async {
+    final participants = await getParticipants();
+    return participants.where((p) => p.id == userId).firstOrNull;
+  }
+
+  @override
+  Future<List<User>> searchParticipants(String query) async {
+    final participants = await getParticipants();
+    final lowerQuery = query.toLowerCase();
+    return participants.where((p) => 
+      p.name.toLowerCase().contains(lowerQuery) ||
+      p.email.toLowerCase().contains(lowerQuery)
+    ).toList();
+  }
+
+  // Pending stamps operations
+  @override
+  Future<List<UserStamp>> getPendingStamps() async {
+    final prefs = await SharedPreferences.getInstance();
+    final pendingJson = prefs.getString('pending_stamps');
+    
+    if (pendingJson != null) {
+      final pendingList = jsonDecode(pendingJson) as List;
+      return pendingList.map((json) => UserStamp.fromJson(json as Map<String, dynamic>)).toList();
+    }
+    
+    return [];
+  }
+
+  @override
+  Future<void> markStampAsSynced(int stampId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final pending = await getPendingStamps();
+    pending.removeWhere((s) => s.id == stampId);
+    await prefs.setString('pending_stamps', jsonEncode(pending.map((s) => s.toJson()).toList()));
+  }
+
+  @override
+  Future<void> markStampAsSyncedByUserAndTask(int userId, int taskId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final pending = await getPendingStamps();
+    pending.removeWhere((s) => s.userId == userId && s.taskId == taskId);
+    await prefs.setString('pending_stamps', jsonEncode(pending.map((s) => s.toJson()).toList()));
+  }
+
   @override
   Future<void> clearAll() async {
     final prefs = await SharedPreferences.getInstance();

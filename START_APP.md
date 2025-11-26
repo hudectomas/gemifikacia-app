@@ -205,3 +205,4 @@ ale všetky ostatné funkcie fungujú 100%!
 
 
 
+

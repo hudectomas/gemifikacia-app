@@ -14,7 +14,7 @@ class SyncService {
   bool _isSyncing = false;
   DateTime? _lastSyncTime;
   int _pendingStampsCount = 0;
-  StreamSubscription<dynamic>? _connectivitySubscription;
+  StreamSubscription<ConnectivityResult>? _connectivitySubscription;
   
   bool get isSyncing => _isSyncing;
   DateTime? get lastSyncTime => _lastSyncTime;
@@ -32,15 +32,7 @@ class SyncService {
   /// Start listening for connectivity changes and auto-sync
   void startAutoSync() {
     _connectivitySubscription = Connectivity().onConnectivityChanged.listen((result) async {
-      // Handle both List<ConnectivityResult> (new API) and ConnectivityResult (old API)
-      final bool isConnected;
-      if (result is List<ConnectivityResult>) {
-        isConnected = result.any(_isConnectedResult);
-      } else if (result is ConnectivityResult) {
-        isConnected = _isConnectedResult(result);
-      } else {
-        isConnected = false;
-      }
+      final isConnected = _isConnectedResult(result);
       
       if (isConnected && _authService.isAuthenticated) {
         developer.log('Internet connected - starting auto-sync...');
@@ -57,13 +49,7 @@ class SyncService {
 
   Future<bool> isOnline() async {
     final result = await Connectivity().checkConnectivity();
-    // Handle both List<ConnectivityResult> (new API) and ConnectivityResult (old API)
-    if (result is List<ConnectivityResult>) {
-      return result.any(_isConnectedResult);
-    } else if (result is ConnectivityResult) {
-      return _isConnectedResult(result);
-    }
-    return false;
+    return _isConnectedResult(result);
   }
 
   /// Update pending stamps count

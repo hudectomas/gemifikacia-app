@@ -6,6 +6,8 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../models/task_model.dart';
 import '../../services/api_service.dart';
 import '../../services/sync_service.dart';
+import '../../services/database_service.dart';
+import '../../providers/auth_provider.dart';
 import '../../config/theme.dart';
 
 class EmployeeQrScannerScreen extends StatefulWidget {
@@ -50,19 +52,43 @@ class _EmployeeQrScannerScreenState extends State<EmployeeQrScannerScreen> {
         final childEmail = parts[2];
         
         if (childId != null) {
-          // Fetch child details
+          // Fetch child details - try online first, then offline
+          final syncService = context.read<SyncService>();
           final apiService = context.read<ApiService>();
-          final users = await apiService.getUsers(role: 'child');
-          final child = users.firstWhere((u) => u.id == childId, orElse: () => users.first);
+          final databaseService = context.read<DatabaseService>();
+          
+          String childName = childEmail; // fallback to email
+          
+          final isOnline = await syncService.isOnline();
+          
+          if (isOnline) {
+            try {
+              final users = await apiService.getUsers(role: 'child');
+              final child = users.firstWhere((u) => u.id == childId, orElse: () => users.first);
+              childName = child.name;
+            } catch (e) {
+              // Fallback to local database
+              final child = await databaseService.getParticipantById(childId);
+              if (child != null) {
+                childName = child.name;
+              }
+            }
+          } else {
+            // Offline - use local database
+            final child = await databaseService.getParticipantById(childId);
+            if (child != null) {
+              childName = child.name;
+            }
+          }
           
           setState(() {
             _scannedChildId = childId;
-            _scannedChildName = child.name;
+            _scannedChildName = childName;
           });
           
           // Show task selection dialog
           if (mounted) {
-            await _showTaskSelectionDialog(childId, child.name);
+            await _showTaskSelectionDialog(childId, childName);
           }
         }
       }
@@ -89,9 +115,27 @@ class _EmployeeQrScannerScreenState extends State<EmployeeQrScannerScreen> {
   }
 
   Future<void> _showTaskSelectionDialog(int childId, String childName) async {
-    // Load tasks
+    // Load tasks - try online first, then offline
+    final syncService = context.read<SyncService>();
     final apiService = context.read<ApiService>();
-    final tasks = await apiService.getTasks();
+    final databaseService = context.read<DatabaseService>();
+    
+    List<TaskModel> tasks = [];
+    final isOnline = await syncService.isOnline();
+    
+    if (isOnline) {
+      try {
+        tasks = await apiService.getTasks();
+        // Uložiť do lokálnej databázy
+        await databaseService.saveTasks(tasks);
+      } catch (e) {
+        // Fallback to local database
+        tasks = await databaseService.getTasks();
+      }
+    } else {
+      // Offline - use local database
+      tasks = await databaseService.getTasks();
+    }
     
     if (tasks.isEmpty) {
       if (mounted) {
@@ -214,13 +258,32 @@ class _EmployeeQrScannerScreenState extends State<EmployeeQrScannerScreen> {
   }
 
   Future<void> _giveStamp(int childId, TaskModel task, String childName) async {
+    final syncService = context.read<SyncService>();
     final apiService = context.read<ApiService>();
-    final success = await apiService.giveStamp(childId, task.id);
+    final authProvider = context.read<AuthProvider>();
+    
+    final isOnline = await syncService.isOnline();
+    bool success = false;
+    bool savedOffline = false;
+
+    if (isOnline) {
+      success = await apiService.giveStamp(childId, task.id);
+      if (success) {
+        await syncService.syncAll();
+      }
+    } else {
+      // Offline - save locally
+      await syncService.saveOfflineStamp(
+        userId: childId,
+        taskId: task.id,
+        stampedBy: authProvider.currentUser?.id ?? 0,
+      );
+      success = true;
+      savedOffline = true;
+    }
 
     if (mounted) {
       if (success) {
-        await context.read<SyncService>().syncAll();
-        
         await showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -228,14 +291,16 @@ class _EmployeeQrScannerScreenState extends State<EmployeeQrScannerScreen> {
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('✅', style: TextStyle(fontSize: 60)),
+                Text(savedOffline ? '📱' : '✅', style: const TextStyle(fontSize: 60)),
                 const SizedBox(height: 16),
-                const Text(
-                  'Úspech!',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                Text(
+                  savedOffline ? 'Uložené offline!' : 'Úspech!',
+                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 12),
-                Text('Pečiatka pridaná pre $childName'),
+                Text(savedOffline 
+                  ? 'Pečiatka pre $childName bola uložená a synchronizuje sa po pripojení.'
+                  : 'Pečiatka pridaná pre $childName'),
                 const SizedBox(height: 8),
                 Text(
                   '${task.title} (+${task.points} bodov)',
@@ -248,7 +313,7 @@ class _EmployeeQrScannerScreenState extends State<EmployeeQrScannerScreen> {
               ElevatedButton(
                 onPressed: () => Navigator.pop(context),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.successColor,
+                  backgroundColor: savedOffline ? AppTheme.warningColor : AppTheme.successColor,
                   minimumSize: const Size(double.infinity, 50),
                 ),
                 child: const Text('OK'),
@@ -524,6 +589,7 @@ class ScannerOverlayPainter extends CustomPainter {
   @override
   bool shouldRepaint(CustomPainter oldDelegate) => false;
 }
+
 
 
 

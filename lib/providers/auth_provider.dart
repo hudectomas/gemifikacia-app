@@ -22,6 +22,14 @@ class AuthProvider with ChangeNotifier {
 
   Future<void> initialize() async {
     await _authService.initialize();
+    
+    // Start auto-sync if user is already logged in
+    if (_authService.isAuthenticated) {
+      _syncService.startAutoSync();
+      // Sync data on app start
+      _syncService.syncAll();
+    }
+    
     notifyListeners();
   }
 
@@ -34,8 +42,9 @@ class AuthProvider with ChangeNotifier {
       final (success, error) = await _authService.login(email, password);
       
       if (success) {
-        // Sync data after login
+        // Sync data after login and start auto-sync
         await _syncService.syncAll();
+        _syncService.startAutoSync();
       }
       
       _error = error;
@@ -65,8 +74,9 @@ class AuthProvider with ChangeNotifier {
       );
       
       if (success) {
-        // Sync data after registration
+        // Sync data after registration and start auto-sync
         await _syncService.syncAll();
+        _syncService.startAutoSync();
       }
       
       _error = error;
@@ -82,6 +92,8 @@ class AuthProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      // Stop auto-sync before logout
+      _syncService.stopAutoSync();
       await _authService.logout();
     } finally {
       _isLoading = false;
@@ -94,6 +106,7 @@ class AuthProvider with ChangeNotifier {
     notifyListeners();
   }
 }
+
 
 
 

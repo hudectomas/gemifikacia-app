@@ -5,6 +5,8 @@ import '../../models/user.dart' as user_model;
 import '../../models/task_model.dart';
 import '../../services/api_service.dart';
 import '../../services/sync_service.dart';
+import '../../services/database_service.dart';
+import '../../providers/auth_provider.dart';
 import '../../config/theme.dart';
 import '../../utils/helpers.dart';
 
@@ -25,13 +27,13 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
   TaskModel? _selectedTask;
   bool _isLoading = false;
   bool _isLoadingTasks = false;
+  bool _isOffline = false;
   final _notesController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
-    _loadTasksForActiveSeason();
-    _loadChildrenForActiveSeason();
+    _loadData();
   }
 
   @override
@@ -41,22 +43,49 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
     super.dispose();
   }
 
-  Future<void> _loadTasksForActiveSeason() async {
-    final apiService = context.read<ApiService>();
-    // Automaticky načíta úlohy pre aktuálnu sezónu
-    final tasks = await apiService.getTasks();
-    setState(() => _tasks = tasks);
-  }
-
-  Future<void> _loadChildrenForActiveSeason() async {
+  Future<void> _loadData() async {
     setState(() => _isLoading = true);
     
+    final syncService = context.read<SyncService>();
+    final databaseService = context.read<DatabaseService>();
     final apiService = context.read<ApiService>();
-    // Automaticky načíta deti pre aktuálnu sezónu
-    final users = await apiService.getUsers(role: 'child');
+    
+    final isOnline = await syncService.isOnline();
+    
+    if (isOnline) {
+      // Online: načítaj z API a ulož do lokálnej DB
+      try {
+        final tasks = await apiService.getTasks();
+        final users = await apiService.getUsers(role: 'child');
+        
+        // Ulož do lokálnej databázy pre offline použitie
+        await databaseService.saveTasks(tasks);
+        await databaseService.saveParticipants(users);
+        
+        setState(() {
+          _tasks = tasks;
+          _users = users;
+          _isOffline = false;
+          _isLoading = false;
+        });
+      } catch (e) {
+        // Ak API zlyhá, použi lokálne dáta
+        await _loadFromLocalDatabase(databaseService);
+      }
+    } else {
+      // Offline: načítaj z lokálnej databázy
+      await _loadFromLocalDatabase(databaseService);
+    }
+  }
+
+  Future<void> _loadFromLocalDatabase(DatabaseService databaseService) async {
+    final tasks = await databaseService.getTasks();
+    final users = await databaseService.getParticipants();
     
     setState(() {
+      _tasks = tasks;
       _users = users;
+      _isOffline = true;
       _isLoading = false;
     });
   }
@@ -77,13 +106,22 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
     setState(() => _isLoadingTasks = true);
     
     final apiService = context.read<ApiService>();
+    final databaseService = context.read<DatabaseService>();
+    final syncService = context.read<SyncService>();
     
     try {
-      // Načítaj pečiatky pre vybraného používateľa
-      final stamps = await apiService.getStamps(userId: userId);
+      List<int> completedTaskIds = [];
       
-      // Získaj ID úloh, ktoré už dieťa má
-      final completedTaskIds = stamps.map((stamp) => stamp.taskId).toSet().toList();
+      final isOnline = await syncService.isOnline();
+      
+      if (isOnline && !_isOffline) {
+        // Online: načítaj pečiatky z API
+        final stamps = await apiService.getStamps(userId: userId);
+        completedTaskIds = stamps.map((stamp) => stamp.taskId).toSet().toList();
+      } else {
+        // Offline: načítaj pečiatky z lokálnej databázy
+        completedTaskIds = await databaseService.getCompletedTaskIds(userId);
+      }
       
       // Filtruj úlohy - zobraz len tie, ktoré ešte nemá
       final available = _tasks.where((task) => !completedTaskIds.contains(task.id)).toList();
@@ -117,19 +155,41 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
 
     setState(() => _isLoading = true);
 
+    final syncService = context.read<SyncService>();
     final apiService = context.read<ApiService>();
-    final success = await apiService.giveStamp(
-      _selectedUser!.id,
-      _selectedTask!.id,
-      notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
-    );
+    final authProvider = context.read<AuthProvider>();
+    
+    final isOnline = await syncService.isOnline();
+    bool success = false;
+    bool savedOffline = false;
+
+    if (isOnline) {
+      // Online: pošli na server
+      success = await apiService.giveStamp(
+        _selectedUser!.id,
+        _selectedTask!.id,
+        notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+      );
+      
+      if (success) {
+        await syncService.syncAll();
+      }
+    } else {
+      // Offline: ulož lokálne a synchronizuj neskôr
+      await syncService.saveOfflineStamp(
+        userId: _selectedUser!.id,
+        taskId: _selectedTask!.id,
+        stampedBy: authProvider.currentUser?.id ?? 0,
+        notes: _notesController.text.trim().isEmpty ? null : _notesController.text.trim(),
+      );
+      success = true;
+      savedOffline = true;
+    }
 
     setState(() => _isLoading = false);
 
     if (mounted) {
       if (success) {
-        await context.read<SyncService>().syncAll();
-        
         await showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -137,11 +197,14 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text('✅', style: TextStyle(fontSize: 60)),
+                Text(savedOffline ? '📱' : '✅', style: const TextStyle(fontSize: 60)),
                 const SizedBox(height: 16),
-                const Text('Úspech!', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                Text(savedOffline ? 'Uložené offline!' : 'Úspech!', 
+                  style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 12),
-                Text('Pečiatka bola pridaná pre ${_selectedUser!.name}'),
+                Text(savedOffline 
+                  ? 'Pečiatka pre ${_selectedUser!.name} bola uložená a synchronizuje sa po pripojení na internet.'
+                  : 'Pečiatka bola pridaná pre ${_selectedUser!.name}'),
               ],
             ),
             actions: [
@@ -150,7 +213,9 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
                   Navigator.pop(context);
                   Navigator.pop(context);
                 },
-                style: ElevatedButton.styleFrom(backgroundColor: AppTheme.successColor),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: savedOffline ? AppTheme.warningColor : AppTheme.successColor,
+                ),
                 child: const Text('Hotovo'),
               ),
             ],
@@ -171,8 +236,30 @@ class _ManualStampScreenState extends State<ManualStampScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pridať Pečiatku'),
-        backgroundColor: AppTheme.warningColor,
+        title: Row(
+          children: [
+            const Text('Pridať Pečiatku'),
+            if (_isOffline) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.cloud_off, size: 14, color: Colors.white),
+                    SizedBox(width: 4),
+                    Text('Offline', style: TextStyle(fontSize: 12, color: Colors.white)),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+        backgroundColor: _isOffline ? AppTheme.infoColor : AppTheme.warningColor,
         foregroundColor: Colors.white,
       ),
       body: SingleChildScrollView(
